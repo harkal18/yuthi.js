@@ -1,9 +1,118 @@
 import { DOMParser } from 'xmldom';
 
+const ACTION_LOAD_COMPONENT = "ACTION_LOAD_COMPONENT";
+const ACTION_UPDATE_COMPONENT = "ACTION_UPDATE_COMPONENT";
+const ACTION_WINDOW_EVENT = "ACTION_WINDOW_EVENT";
+
+export const generateRandomString = (length: number): string => {
+    let result = '';
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const charactersLength = characters.length;
+    for (var i = 0; i < length; i++) {
+        result += characters.charAt(Math.floor(Math.random() * charactersLength));
+    }
+    return result;
+}
+
+class Requestable {
+    id!: string;
+    api!: string;
+    error?: boolean;
+    message?: string;
+    data?: any;
+}
 
 class YuthiAppConfig {
     name?: string;
     components?: Map<string, string>;
+}
+
+type OnComponentChange = (html: string) => void;
+
+class Component {
+
+    private hash: string;
+    private html: string = '';
+
+    constructor(public components: Map<string, string>, public onComponentChange: OnComponentChange, public data?: string) {
+        this.hash = generateRandomString(7);
+    }
+
+    private resolveComponent(dom: string): Promise<string> {
+        return new Promise(async (resolve, reject) => {
+            try {
+                console.log(dom);
+                let tempHtml = "";
+                const parser = new DOMParser();
+
+                let sw: any = self;
+                sw.__xml_parser__ = DOMParser;
+
+                const document: any = parser.parseFromString(dom, "text/xml");
+                document.documentElement.setAttribute("__hash__", this.hash);
+                for (const child of Array.from(document.childNodes) as any) {
+                    const component: any = this.components.get(child.nodeName.toLowerCase());
+                    if (component !== undefined) {
+                        const view = await new Promise(async (resolve2, reject2) => {
+                            try {
+                                await fetch(component)
+                                    .then(res => res.text())
+                                    .then(javascript => {
+                                        const component = new Function(`
+                                        ${javascript}
+                                        return component;
+                                    `)();
+                                        component(new App(new Component(this.components, (html: string) => {
+                                            resolve2(html);
+                                        }, child.getAttribute("data"))));
+                                    })
+                            } catch (error) {
+                                reject2(error);
+                            }
+                        });
+                        tempHtml += view;
+                    } else {
+                        if (child.hasChildNodes() && child.childNodes.length > 1) {
+                            const _components = await this.resolveComponent(child.toString());
+                            tempHtml += _components;
+                        } else {
+                            tempHtml += child.toString();
+                        }
+                    }
+                }
+                resolve(tempHtml);
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+
+    getData() {
+        return this.data;
+    }
+
+    setDom(dom: string) {
+        this.resolveComponent(dom).then((html: string) => {
+            this.html = html;
+            if (this.onComponentChange !== undefined) {
+                this.onComponentChange(this.html);
+            }
+        })
+            .catch(error => console.log(error));
+    }
+
+    private getDom(): string {
+        return this.html;
+    }
+
+}
+
+class App {
+
+    constructor(public component: Component) {
+
+    }
+
 }
 
 const mapFromObject = (object: any): Map<string, any> => {
@@ -24,43 +133,6 @@ const objectFromMap = (map: any): any => {
         object[key] = value;
     });
     return object;
-}
-
-const resolveComponents = (components: Map<string, string>, code: string): Promise<string> => {
-    return new Promise(async (resolve, reject) => {
-        try {
-            let html = "";
-            const parser = new DOMParser();
-            const document: any = parser.parseFromString(code, "text/xml");
-            for (const child of Array.from(document.childNodes) as any) {
-
-                const component: any = components.get(child.nodeName.toLowerCase());
-                if (component !== undefined) {
-                    const view = await fetch(component)
-                        .then(res => res.text())
-                        .then(javascript => {
-                            const component = new Function(`
-                                                    ${javascript}
-                                                    component.apply(component, arguments);
-                                                    return component;
-                                                `)();
-                            return component.getView(child.getAttribute("data"));
-                        });
-                    html += view;
-                } else {
-                    if (child.hasChildNodes() && child.childNodes.length > 0) {
-                        const _components = await resolveComponents(components, child.toString());
-                        html += _components;
-                    } else {
-                        html += child.toString();
-                    }
-                }
-            }
-            resolve(html)
-        } catch (error) {
-            reject(error);
-        }
-    });
 }
 
 (() => {
@@ -88,65 +160,6 @@ const resolveComponents = (components: Map<string, string>, code: string): Promi
                                 'content-type': 'application/json'
                             }
                         }));
-                    } else if (api === "getIndexPage") {
-                        fetch("./yuthi.app.json")
-                            .then(res => res.json())
-                            .then((json: YuthiAppConfig) => {
-                                console.log(json);
-                                if (json !== undefined && json.components !== undefined) {
-                                    const components = mapFromObject(json.components);
-                                    const root: any = components.get("root");
-                                    fetch(root)
-                                        .then(res => res.text())
-                                        .then(async javascript => {
-                                            const component = new Function(`
-                                                    ${javascript}
-                                                    component.apply(component, arguments);
-                                                    return component;
-                                                `)();
-                                            context.__xml_parser__ = DOMParser;
-                                            const html = await resolveComponents(components, component.getView());
-                                            resolve(new Response(html, {
-                                                status: 200,
-                                                headers: {
-                                                    'content-type': 'text/html'
-                                                }
-                                            }));
-                                        }).catch(error => {
-                                            resolve(new Response(`${error}`, {
-                                                status: 200,
-                                                headers: {
-                                                    'content-type': 'text/html'
-                                                }
-                                            }));
-                                        });
-                                } else {
-                                    const result = {
-                                        "error": true,
-                                        "message": "Invalid yuthi.app.json file :( Can't load root component.",
-                                        "data": {}
-                                    }
-                                    resolve(new Response(JSON.stringify(result), {
-                                        status: 200,
-                                        headers: {
-                                            'content-type': 'application/json'
-                                        }
-                                    }));
-                                }
-                            }).catch(error => {
-                                console.log("error getting config file: " + error)
-                                const result = {
-                                    "error": true,
-                                    "message": `${error}`,
-                                    "data": {}
-                                }
-                                resolve(new Response(JSON.stringify(result), {
-                                    status: 200,
-                                    headers: {
-                                        'content-type': 'application/json'
-                                    }
-                                }));
-                            });
                     } else {
                         const result = {
                             "error": true,
@@ -168,4 +181,44 @@ const resolveComponents = (components: Map<string, string>, code: string): Promi
 
         }
     });
+
+    context.addEventListener('message', async (event: any) => {
+        try {
+            const requestable: Requestable = JSON.parse(event.data);
+            if (
+                requestable.id !== undefined &&
+                requestable.id !== null &&
+                requestable.api !== undefined &&
+                requestable.api !== null
+            ) {
+                switch (requestable.api) {
+                    case ACTION_LOAD_COMPONENT:
+                        const json: YuthiAppConfig = await fetch("./yuthi.app.json").then(res => res.json());
+                        console.log(json);
+                        const components = mapFromObject(json.components);
+                        const root: any = components.get(requestable.data.component);
+                        const javascript = await fetch(root).then(res => res.text());
+                        const component = new Function(`
+                            ${javascript}
+                            return component;
+                        `)();
+                        component(new App(new Component(components, (html: string) => {
+                            const loadIndexPageRequestable: Requestable = {
+                                id: "update_component_request",
+                                api: ACTION_UPDATE_COMPONENT,
+                                data: {
+                                    html: html
+                                }
+                            }
+                            event.source.postMessage(JSON.stringify(loadIndexPageRequestable));
+                        })));
+                        break;
+                    case ACTION_WINDOW_EVENT:
+                        console.log(requestable.data);
+                        break;
+                }
+            }
+        } catch (error) { }
+    });
+
 })();

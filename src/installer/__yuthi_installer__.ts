@@ -1,4 +1,8 @@
 
+const ACTION_LOAD_COMPONENT = "ACTION_LOAD_COMPONENT";
+const ACTION_UPDATE_COMPONENT = "ACTION_UPDATE_COMPONENT";
+const ACTION_WINDOW_EVENT = "ACTION_WINDOW_EVENT";
+
 export abstract class Component {
 
     constructor(public routes: Map<string, string>) {
@@ -6,6 +10,14 @@ export abstract class Component {
     }
 
     abstract getView(data?: any): Promise<string>;
+}
+
+class Requestable {
+    id!: string;
+    api!: string;
+    error?: boolean;
+    message?: string;
+    data?: any;
 }
 
 export class App {
@@ -44,6 +56,8 @@ export class App {
     }
 
     run() {
+        // here we should set up window message listener
+        // and send the ping to load the main component
         (async () => {
             try {
                 const rootComponent = this.components.get('root');
@@ -70,24 +84,119 @@ export class App {
 
 export class YuthiApp {
 
-    constructor(public name: string) { }
+    constructor(public name: string) {
+        window.onmessage = (event: any) => {
+            console.log(event);
+            (async () => {
+                try {
+                    const requestable: Requestable = JSON.parse(event.data);
+                    if (
+                        requestable.id !== undefined &&
+                        requestable.id !== null &&
+                        requestable.api !== undefined &&
+                        requestable.api !== null
+                    ) {
+                        switch (requestable.api) {
+                            case ACTION_UPDATE_COMPONENT:
+
+                                break;
+                        }
+                    }
+                } catch (error) { }
+            })();
+        };
+    }
+
+    private checkServiceWorkerState(): Promise<boolean> {
+        return new Promise(async (resolve, reject) => {
+            try {
+                const json = await fetch('/__yuthi_api__/getServiceWorkerState').then(response => response.json());
+                resolve(!json.error);
+            } catch (error) {
+                console.error(error);
+                console.error("YUTHI: Service worker is not ready :( Refreshing the page...");
+                resolve(false);
+
+            }
+        });
+    }
+
+    private simplifyEvent(event: any, depth = 5, max_depth = 5) {
+        if (depth > max_depth) {
+            return 'Object';
+        } else {
+            const object: any = {};
+            for (let key in event) {
+                let value = event[key];
+                if (value instanceof Node) {
+                    const node: any = value;
+                    value = {
+                        id: node.id,
+                        hash: node.getAttribute("__hash__") || null
+                    };
+                } else if (value instanceof Window) {
+                    value = 'Window';
+                } else if (value instanceof Object) {
+                    value = this.simplifyEvent(value, depth + 1, max_depth);
+                }
+                object[key] = value;
+            }
+            return depth ? object : JSON.stringify(object);
+        }
+    }
 
     run() {
-        if ('serviceWorker' in navigator) {
+        if (navigator.serviceWorker) {
             window.addEventListener('load', async () => {
                 try {
-                    const registration = await navigator.serviceWorker.register('./__yuthi_sw__.js');
-                    console.info(`YUTHI: Service worker registration successful with scope: ${registration.scope}`);
-                    // service worker active handler
-                    try {
-                        const json = await fetch('/__yuthi_api__/getServiceWorkerState')
-                            .then(response => response.json());
-                        if(!json.error){
-                            console.info("YUTHI: Service worker is ready :)");
-                            this.loadIndexPage();
+                    await navigator.serviceWorker.register('./__yuthi_sw__.js');
+                    const registration: any = await navigator.serviceWorker.ready;
+                    const ready = await this.checkServiceWorkerState();
+                    if (ready) {
+                        const events = ['click'];
+                        Object.keys(window).forEach(key => {
+                            if (/^on/.test(key)) {
+                                if(events.includes(key.slice(2))){
+                                    window.addEventListener(key.slice(2), (event: any) => {
+                                        const requestable: Requestable = {
+                                            id: "window_event_request",
+                                            api: ACTION_WINDOW_EVENT,
+                                            data: {
+                                                event: this.simplifyEvent(event)
+                                            }
+                                        }
+                                        registration.active.postMessage(JSON.stringify(requestable));
+                                    });
+                                }
+                            }
+                        });
+                        navigator.serviceWorker.addEventListener('message', event => {
+                            try {
+                                const requestable: Requestable = JSON.parse(event.data);
+                                if (
+                                    requestable.id !== undefined &&
+                                    requestable.id !== null &&
+                                    requestable.api !== undefined &&
+                                    requestable.api !== null
+                                ) {
+                                    switch (requestable.api) {
+                                        case ACTION_UPDATE_COMPONENT:
+                                            document.body.append(new DOMParser().parseFromString(requestable.data.html, "text/xml").documentElement)
+                                            break;
+                                    }
+                                }
+                            } catch (error) { }
+                        });
+
+                        const requestable: Requestable = {
+                            id: "load_root_component_request",
+                            api: ACTION_LOAD_COMPONENT,
+                            data: {
+                                component: "root"
+                            }
                         }
-                    } catch (error) {
-                        console.error(error);
+                        registration.active.postMessage(JSON.stringify(requestable));
+                    } else {
                         console.error("YUTHI: Service worker is not ready :( Refreshing the page...");
                         window.location.reload();
                     }
@@ -98,18 +207,6 @@ export class YuthiApp {
         } else {
             console.error("YUTHI: This browser do not support service workers :( Yuthi.js can't work in such a browser");
         }
-    }
-
-    private loadIndexPage() {
-        fetch('/__yuthi_api__/getIndexPage')
-            .then(response => response.text())
-            .then(html => {
-                document.open();
-                document.write(html);
-                document.close();
-            }).catch(error => {
-                console.error(`YUTHI: Something went wrong :( ${error}`);
-            });
     }
 
 }
