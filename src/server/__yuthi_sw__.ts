@@ -29,9 +29,12 @@ class YuthiAppConfig {
 
 type OnComponentChange = (html: string) => void;
 
+// every component will maintain a map of components it has inside
+
 class Component {
 
     private hash: string;
+
     private html: string = '';
 
     constructor(public components: Map<string, string>, public onComponentChange: OnComponentChange, public data?: string) {
